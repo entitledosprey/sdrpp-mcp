@@ -115,3 +115,7 @@ SDR++.
 The software is for receiving only. In the US, 47 USC 605 and ECPA restrict divulging or using the contents of
 private communications. Decoding cellular or cordless-phone content and decrypting anything are both off limits. Know
 your local rules.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
