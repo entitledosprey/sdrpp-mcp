@@ -95,22 +95,31 @@ def _ensure_in_band(freq_hz: float, margin_hz: float = 0.0):
 def _tune_center(target_hz: float):
     """Retune SDR++ so its centre frequency is near target, via the Radio VFO.
 
-    The rigctl server uses SDR++'s normal tuning: a VFO jump outside the band recentres the
-    SDR, a small jump only moves the VFO. If the centre didn't follow, jump away and back.
+    The rigctl server uses SDR++'s normal tuning: a VFO jump outside the view recentres the
+    SDR with the VFO near the edge it came in from, a small jump only moves the VFO. So
+    approach from below, measure where the VFO landed relative to the centre, then repeat
+    the approach with the VFO pre-offset by that amount.
     """
+    global _approach_offset
     rig = sdrpp.Rigctl()
     st = sdrpp.radio_state()
     fs = st["sample_rate"] or 2.4e6
-    rig.set_freq(target_hz)
-    time.sleep(0.25)  # tuner settle + buffer flush
-    st = _state_or_fail(fresh=True)
-    if abs(st["center_hz"] - target_hz) > fs * 0.3:
-        rig.set_freq(target_hz + 4 * fs)
+    tol = fs * 0.05
+    vfo = target_hz + _approach_offset
+    for _ in range(4):
+        rig.set_freq(vfo - 4 * fs)
         time.sleep(0.15)
-        rig.set_freq(target_hz)
-        time.sleep(0.25)
+        rig.set_freq(vfo)
+        time.sleep(0.25)  # tuner settle + buffer flush
         st = _state_or_fail(fresh=True)
+        if abs(st["center_hz"] - target_hz) <= tol:
+            break
+        vfo += target_hz - st["center_hz"]
+    _approach_offset = vfo - st["center_hz"]
     return st
+
+
+_approach_offset = 0.0  # VFO minus centre after SDR++ recentres on an upward jump
 
 
 @contextmanager
@@ -267,13 +276,14 @@ def band_sweep(start: str, stop: str, dwell_s: float = 0.5, threshold_db: float 
     if steps > 200:
         raise ValueError(f"{steps} steps needed; narrow the range (usable {usable/1e6:.2f} MHz per step)")
     all_f, all_avg, all_max, found = [], [], [], []
-    floors = []
+    floors, covered = [], []
     try:
         for i in range(steps):
             target = lo_hz + usable * (i + 0.5)
             st = _tune_center(target)
             iq, _ = sdrpp.capture_iq(dwell_s, fs)
             c = st["center_hz"]
+            covered.append((c - usable / 2, c + usable / 2))
             f, t, s = dsp.spectrogram(iq, fs, fft_size)
             dets, floor = dsp.detect(f, s, threshold_db, exclude=_band_exclusions(f, fs))
             floors.append(floor)
@@ -308,12 +318,20 @@ def band_sweep(start: str, stop: str, dwell_s: float = 0.5, threshold_db: float 
         rows.append({"freq_mhz": round(fabs / 1e6, 5), "width_khz": round(d["width_hz"] / 1e3, 2),
                      "peak_snr_db": round(d["peak_snr_db"], 1), "duty": d["duty"],
                      "band_hint": bandplan.short_label(fabs)})
+    gaps, edge = [], lo_hz
+    for a, b in sorted(covered):
+        if a > edge + 1e3:
+            gaps.append(f"{fmt(edge)} – {fmt(min(a, hi_hz))}")
+        edge = max(edge, b)
+    if edge < hi_hz - 1e3:
+        gaps.append(f"{fmt(edge)} – {fmt(hi_hz)}")
     png = _stamp(lo_hz, "sweep", "png")
     plots.sweep_plot(png, fa[order], np.concatenate(all_avg)[order], np.concatenate(all_max)[order],
                      floor, f"Sweep {fmt(lo_hz)} – {fmt(hi_hz)}, {steps} steps × {dwell_s:g}s",
                      marks=[(r["freq_mhz"] * 1e6, f"{r['freq_mhz']:.3f}") for r in rows[:25]])
     return [{"range": f"{fmt(lo_hz)} – {fmt(hi_hz)}", "steps": steps, "signals": rows,
-             "image": str(png), "restored_vfo": fmt(original)}, Image(path=str(png))]
+             "image": str(png), "restored_vfo": fmt(original),
+             **({"not_covered": gaps} if gaps else {})}, Image(path=str(png))]
 
 
 # ---------------------------------------------------------------- tools: identifying
