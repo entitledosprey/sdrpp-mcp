@@ -112,9 +112,13 @@ are treated as MHz.
 
 ## Data locations
 
-Everything lives under `~/.local/share/sdrpp-mcp/`:
+Everything lives under `~/.local/share/sdrpp-mcp/`, or under `SDRPP_MCP_DATA` if that is set in
+the server's environment (run `setup_sdrpp.py` with the same variable so SDR++'s probe recorder
+writes there too):
 
-- `captures/`: WAV, IQ and PNG files (named `<time>_<freq>_<kind>`)
+- `images/`: PNG spectra and waterfalls (named `<time>_<freq>_<kind>`); override with
+  `SDRPP_MCP_IMAGES`
+- `captures/`: WAV and IQ recordings
 - `center-probe/`: temporary probe files
 - `logbook.db`: the logbook
 

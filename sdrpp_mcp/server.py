@@ -19,6 +19,8 @@ from .logbook import Logbook
 DATA = Path(os.environ.get("SDRPP_MCP_DATA", Path.home() / ".local/share/sdrpp-mcp"))
 CAPTURES = DATA / "captures"
 CAPTURES.mkdir(parents=True, exist_ok=True)
+IMAGES = Path(os.environ.get("SDRPP_MCP_IMAGES", DATA / "images")).expanduser()  # PNGs only
+IMAGES.mkdir(parents=True, exist_ok=True)
 EDGE_FRACTION = 0.1   # ignore this fraction of the band at each edge (filter roll-off)
 DC_MASK_HZ = 12000    # ignore +/- this around the centre (zero-IF DC spike)
 
@@ -58,7 +60,8 @@ def fmt(hz: float) -> str:
 
 
 def _stamp(freq_hz, kind, ext):
-    return CAPTURES / f"{time.strftime('%Y%m%d-%H%M%S')}_{freq_hz/1e6:.4f}MHz_{kind}.{ext}"
+    folder = IMAGES if ext == "png" else CAPTURES
+    return folder / f"{time.strftime('%Y%m%d-%H%M%S')}_{freq_hz/1e6:.4f}MHz_{kind}.{ext}"
 
 
 def _state_or_fail(fresh: bool = False):

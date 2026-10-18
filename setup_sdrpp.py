@@ -8,6 +8,7 @@ Backups of every changed file are written next to it.
 """
 
 import json
+import os
 import subprocess
 import sys
 import time
@@ -16,7 +17,7 @@ from pathlib import Path
 CONF = Path.home() / ".config/sdrpp"
 IQ_PORT = 4533
 PROBE_NAME = "Center Probe"
-PROBE_DIR = Path.home() / ".local/share/sdrpp-mcp/center-probe"
+PROBE_DIR = Path(os.environ.get("SDRPP_MCP_DATA", Path.home() / ".local/share/sdrpp-mcp")) / "center-probe"
 
 
 def load(name):
