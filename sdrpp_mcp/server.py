@@ -5,6 +5,7 @@ import re
 import shutil
 import subprocess
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 import numpy as np
@@ -110,6 +111,18 @@ def _tune_center(target_hz: float):
         time.sleep(0.25)
         st = _state_or_fail(fresh=True)
     return st
+
+
+@contextmanager
+def _keep_vfo():
+    """Put the user's Radio VFO back if the body retuned SDR++ to reach another frequency."""
+    rig = sdrpp.Rigctl()
+    original = rig.get_freq()
+    try:
+        yield
+    finally:
+        if rig.get_freq() != original:
+            rig.set_freq(original)
 
 
 def _capture(seconds):
@@ -320,7 +333,15 @@ def analyze_signal(frequency: str, bandwidth_hz: float | None = None, seconds: f
     envelope constancy, FM deviation, FSK levels, symbol rate, burst timing, TDMA periodicity,
     CTCSS / audio tones (for FM/AM), stereo pilot/RDS (WFM). Returns heuristic modulation guesses,
     band-plan context and a zoomed waterfall image. If bandwidth_hz is omitted it is estimated.
-    tune_vfo=True tunes the user's SDR++ Radio VFO to it afterwards so they can listen."""
+    If SDR++ has to retune to reach the signal, the original VFO is restored afterwards, unless
+    tune_vfo=True, which leaves the Radio VFO on the signal so the user can listen."""
+    if tune_vfo:
+        return _analyze(frequency, bandwidth_hz, seconds, tune_vfo)
+    with _keep_vfo():
+        return _analyze(frequency, bandwidth_hz, seconds, tune_vfo)
+
+
+def _analyze(frequency, bandwidth_hz, seconds, tune_vfo):
     hz = parse_freq(frequency)
     st, retuned = _ensure_in_band(hz, margin_hz=(bandwidth_hz or 0) / 2)
     for attempt in range(2):
@@ -403,8 +424,9 @@ def analyze_signal(frequency: str, bandwidth_hz: float | None = None, seconds: f
 
 
 def _channel(hz, bw, seconds, out_rate=None):
-    st, _ = _ensure_in_band(hz, margin_hz=bw / 2)
-    st, iq, _ = _capture(seconds)
+    with _keep_vfo():
+        st, _ = _ensure_in_band(hz, margin_hz=bw / 2)
+        st, iq, _ = _capture(seconds)
     x, rate = dsp.extract(iq, st["sample_rate"], hz - st["center_hz"], bw, out_rate)
     return x, rate
 
