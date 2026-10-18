@@ -1,6 +1,6 @@
 ---
 name: sdr-signal-id
-description: Find, identify, decode and explain radio transmissions received with SDR++ (RTL-SDR etc.). Use when the user asks what a signal is, wants to scan/sweep a band, find activity, decode pagers/APRS/sensors/EAS, record audio or IQ, learn about a modulation or service, tune SDR++, or log/bookmark signals. Pairs with the `sdrpp` MCP server tools (sdr_status, spectrum_snapshot, band_sweep, analyze_signal, identify_frequency, decode, record_audio, record_iq, log_signal).
+description: Find, identify, decode and explain radio transmissions received with SDR++ (RTL-SDR etc.). Use when the user asks what a signal is, wants to scan/sweep a band, find activity, decode pagers/APRS/sensors/EAS, record audio or IQ, learn about a modulation or service, tune SDR++, or log/bookmark signals. Also covers LoRa/MeshCore monitoring, PPM calibration, antenna advice and P25/trunking questions. Pairs with the `sdrpp` MCP server tools (sdr_status, spectrum_snapshot, band_sweep, analyze_signal, identify_frequency, decode, record_audio, record_iq, watch_channel, log_signal).
 ---
 
 # SDR signal identification
@@ -18,8 +18,10 @@ US band plan apply.
    how to fix it; relay that briefly. Warn if the gain is 0 or ADC clipping is reported.
 2. Pick the workflow below that matches the request.
 
-Tuning tools move the user's SDR++ view. Say so before a `band_sweep`; it restores the VFO
-afterwards. `analyze_signal` only retunes when the frequency is outside the current passband.
+Tuning tools move the user's SDR++ view. Say so before a `band_sweep`. Every tool that has
+to retune restores the Radio VFO afterwards (except `sdr_tune`, `spectrum_snapshot` with a
+`frequency`, and `analyze_signal` with `tune_vfo=True`, which move it on purpose). The VFO's
+demodulation mode is never changed by sweeps or analysis: they work on raw IQ.
 
 ## Workflow: "what's out there?" (finding)
 
@@ -30,7 +32,11 @@ afterwards. `analyze_signal` only retunes when the frequency is outside the curr
 - Bursty bands (ISM, pagers, ACARS, APRS) need longer dwell (`seconds`/`dwell_s` 2–5) since
   signals come and go. `duty` < 0.2 means intermittent.
 - Treat narrow, perfectly steady carriers at exact multiples of 1 MHz / 28.8 MHz / the sample
-  rate as likely spurs (birdies) until proven otherwise (see hardware.md).
+  rate (2.4 MHz), or in families spaced exactly 4.8 or 9.6 MHz, as likely spurs until proven
+  otherwise: `analyze_signal` it; if SDR++ had to retune and the signal is gone, it was a spur.
+- If `band_sweep` returns `not_covered`, say so and re-sweep that range.
+- Amateur repeaters are idle most of the time; an empty sweep is normal. Offer a longer watch
+  or a sweep at busier times rather than concluding the band is dead.
 - Rank findings by interest, not just strength: name the likely service using `band_hint`
   and `identify_frequency`.
 
@@ -72,6 +78,25 @@ It blocks for `minutes`; tell the user when it starts so they can transmit a tes
 Summarise: nodes heard (name/type/hash, hops), path structure (which repeaters relay), and
 packet-type mix. Message bodies are encrypted: never try to decrypt them. Adverts can carry a
 precise position; point that out when it's the user's own node.
+
+## Workflow: calibration (PPM)
+
+If signals look consistently off-frequency, measure rather than guess: ATSC TV pilots (channel
+lower edge + 309.441 kHz; VHF 7–13 start at 174 MHz, UHF 14–36 at 470 MHz, 6 MHz apart) are
+the best local reference. Take the median offset of strong pilots (≥ 25 dB), discard outliers
+(weak channels, stations with offset pilots). ppm = (true − measured)/true × 10⁶; SDR++ takes
+an integer under Source → PPM Correction. NOAA Weather Radio is a rough cross-check; FM
+broadcast carriers are too noisy. Make sure the reference is actually inside the passband
+before measuring.
+
+## P25 and trunking questions
+
+SDR++ has no P25 trunking or IMBE voice. Options, best first: SDRTrunk (handles simulcast
+CQPSK well; can import RadioReference data), DSD-FME (trunks by retuning SDR++ through rigctl
+on 4532, with audio via SDR++'s network sink on 7355; conflicts with the `sdrpp` tools while
+running), OP25, or the sdrpp-vhfvoiceradio plugin (conventional single-channel only).
+`tools/sdrtrunk_to_sdrpp.py` turns an SDRTrunk playlist's site frequencies into SDR++
+bookmarks. Never help with encrypted talkgroups.
 
 ## Workflow: teaching
 

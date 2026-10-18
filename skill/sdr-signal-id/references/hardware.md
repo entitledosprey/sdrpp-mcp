@@ -2,8 +2,9 @@
 
 ## The receiver: Nooelec NESDR SMArTee XTR
 
-- Tuner: Elonics E4000 (that's what "XTR" means), RTL2832U ADC, 8-bit, TCXO (≈0.5 ppm, so PPM
-  correction usually 0).
+- Tuner: Elonics E4000 (that's what "XTR" means), RTL2832U ADC, 8-bit, TCXO. One unit measured
+  +0.72 ppm against ATSC pilots (signals read ~0.7 ppm low), so PPM correction 1 helps
+  slightly; measure rather than assume (SKILL.md, calibration workflow).
 - Range roughly **65–2300 MHz** with a **gap around 1100–1250 MHz** (E4000 PLL gap).
   Below ~65 MHz (CB, 10 m, 6 m, HF) it is weak or deaf; HF needs an upconverter (e.g. Ham It Up)
   plus an SDR++ frequency offset. E4000 does not support direct sampling.
@@ -24,6 +25,18 @@ If unsure of the tuner, SDR++'s log on source start prints the tuner type.
 
 ## Antennas (biggest factor in what you can hear)
 
+A practical set to cover 65–2300 MHz:
+1. **Discone** (e.g. Diamond D130J, Tram 1410), outdoors and high: ~25–1300 MHz all-rounder
+   (FM, airband, VHF/UHF, 2 m/70 cm, 700/800 MHz trunking). Biggest single upgrade.
+2. **Adjustable dipole kit** (e.g. RTL-SDR Blog): V at 120° with ~53 cm legs for 137 MHz
+   weather satellites; short and straight for UHF.
+3. **1090 MHz antenna** (FlightAware-style, or a 6.5 cm quarter-wave ground plane) plus a 1090
+   filter for ADS-B.
+4. **2 m/70 cm vertical** (X50/GP-3 class) for repeaters and APRS.
+Optional: L-band patch (Inmarsat/Iridium ~1.5–1.6 GHz); 800 MHz Yagi aimed at one simulcast
+site (often decodes simulcast P25 better than an omni).
+
+
 - The stock telescopic/mag-mount whip works for strong local signals (FM, NOAA, local repeaters,
   pagers, ISM nearby). For a quarter-wave whip, element length (cm) ≈ 7125 / f(MHz):
   162 MHz → 44 cm, 433 MHz → 16.5 cm, 1090 MHz → 6.5 cm.
@@ -34,8 +47,11 @@ If unsure of the tuner, SDR++'s log on source start prints the tuner type.
 
 ## Spurs and artefacts
 
-- RTL dongles produce birdies at multiples of 28.8 MHz (the crystal) and others from USB noise.
+- RTL dongles produce birdies at multiples of 28.8 MHz (the crystal), of the sample rate
+  (2.4 MHz), in families spaced 4.8/9.6 MHz, and combs of narrow lines from USB/laptop noise.
   Spurs stay put on screen when you retune by a small amount; real signals move.
+- Very strong nearby transmitters (e.g. a LoRa repeater 50+ dB over the noise) spread energy
+  ±200 kHz either side: lower the gain.
 - Use a USB extension cable to get the dongle away from the PC.
 
 ## Legal (US) {#legal}
@@ -47,7 +63,7 @@ If unsure of the tuner, SDR++'s log on source start prints the tuner type.
   - **47 USC 605:** don't divulge or use the contents of non-public communications you overhear
     (e.g. pager messages, business dispatch) for your or others' benefit.
   - Scanner use in a vehicle is restricted in some states (e.g. Indiana, Kentucky, Minnesota,
-    Florida, New York) unless licensed. Illinois has no general mobile-scanner ban, but check.
+    Florida, New York) unless licensed. Check your state's rules.
 - Public broadcast, amateur, NOAA weather, aviation, marine, APRS, ADS-B, weather satellites and
   ISM telemetry are commonly monitored by hobbyists.
 - Transmitting needs a license (amateur, GMRS) or certified equipment: receive-only here.

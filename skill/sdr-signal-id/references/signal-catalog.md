@@ -46,7 +46,10 @@ by frequency) tell you more than the modulation alone.
 | Railroad EOT/HOT | 457.9375 / 452.9375 | FSK 1200 short bursts | softEOT, pyEOT |
 | ISM sensors / remotes | 315, 345, 433.92, 915 | OOK (on/off pulses) or FSK, ms-long bursts, often repeated 3–10× | `decode … ism` (rtl_433) |
 | Smart meters (ERT) | 912–928 | FHSS, OOK/FSK bursts | rtlamr |
-| LoRa | 902–928 | chirp (diagonal lines on waterfall), 125/250/500 kHz | gr-lora |
+| LoRa | 902–928 | chirp (diagonal lines on waterfall), 62.5–500 kHz; bursts of 100–500 ms | `watch_channel` (detects, decodes with gr-lora_sdr) |
+| MeshCore (US) | 910.525 | LoRa SF7, 62.5 kHz, sync word 0x12; adverts ~440 ms, short acks/requests ~160 ms | `watch_channel` parses route, path, adverts |
+| Meshtastic (US LongFast) | 906.875 | LoRa SF11, 250 kHz, sync word 0x2B | `watch_channel … 250000 … sync_word=0x2B` (detection/decoding; no Meshtastic parser) |
+| 900 MHz FHSS beacons | 902–928 | 2-FSK bursts ~6 ms, ±~40 kHz tones, ~150 kHz wide, hopping ~50 channels ~528 kHz apart, each channel ~1/s | cordless phones/intercoms, Amazon Sidewalk or utility mesh; don't decode cordless audio |
 | Radiosondes | 400–406, 1676–1682 | GFSK 4800 (RS41), 1–2 s cycles, launched 00Z/12Z (6–7 am/pm CT) | radiosonde_auto_rx |
 | EPIRB/ELT | 406.0–406.1, 121.5 | 406: 0.5 s BPSK burst ~every 50 s; 121.5: swept AM tone (real emergencies are rare; tests on the hour's first 5 min) | |
 | Meteor-M LRPT | 137.1 / 137.9 | QPSK 72 ksym/s ~120 kHz, only during passes, Doppler-shifting | SDR++ Meteor Demodulator → SatDump |

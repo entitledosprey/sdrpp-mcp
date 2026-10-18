@@ -13,7 +13,8 @@ tuner, 2.4 MS/s).
 
 - **Live spectrum**: snapshot the current passband with max-hold detection against an
   estimated noise floor, or step-sweep an arbitrary range (up to 200 retunes). Both return
-  waterfall PNGs.
+  waterfall PNGs. Retuning lands exactly on the requested centre, sweeps report any range
+  they failed to cover, and every tool that has to retune puts the Radio VFO back afterwards.
 - **Signal analysis**: extract a channel and measure:
   - SNR, 99% occupied bandwidth, duty cycle and bursts
   - envelope statistics, spectral skew and flatness
@@ -88,6 +89,20 @@ directory into your client's skills folder:
 ln -s "$PWD/skill/sdr-signal-id" ~/.config/<client>/skills/sdr-signal-id
 ```
 
+## Example requests
+
+Once the server (and optionally the skill) is registered with an MCP client, plain requests
+map onto the tools:
+
+| Request | What runs |
+|---|---|
+| "What's on 2 m / 70 cm right now?" | `band_sweep` 144–148 / 420–450 MHz, then `analyze_signal` on anything that isn't a spur |
+| "What is this signal at 154.6?" | `identify_frequency` + `analyze_signal` |
+| "Decode pagers on 929–932" | `band_sweep`, then `decode … pager` on active channels |
+| "Any weather sensors?" | `decode 433.92M ism` (or 915M) |
+| "Watch the MeshCore channel while I send an advert" | `watch_channel 910.525M` |
+| "Log that" | `log_signal` |
+
 ## Tools
 
 | Tool | Purpose |
@@ -122,11 +137,20 @@ writes there too):
 - `center-probe/`: temporary probe files
 - `logbook.db`: the logbook
 
+## Other tools
+
+- `tools/sdrtrunk_to_sdrpp.py PLAYLIST.xml OUT_DIR`: turns an SDRTrunk playlist's site
+  frequencies into SDR++ Frequency Manager import files. SDR++ can't follow P25 trunking or
+  decode its voice; for that use SDRTrunk, OP25 or DSD-FME (which can retune SDR++ through its
+  rigctl server).
+
 ## Frequency calibration
 
 RTL-SDR crystals are typically off by somewhere between 0 and 50 ppm, and TCXO models by about 1 ppm. A good local reference
 is the ATSC digital TV pilot: an unmodulated carrier at the channel's lower edge plus 309.441 kHz.
-Measure the apparent offset of a few strong pilots. The correction is
+Measure the apparent offset of a few strong pilots (narrow FFT peak within ±15 kHz of the
+expected frequency; ignore weak channels and stations that run offset pilots). Broadcast FM
+carriers are too noisy for this. The correction is
 `ppm = (true − measured) / true × 10⁶`. Enter it, rounded, under **Source → PPM Correction** in
 SDR++.
 
@@ -135,6 +159,10 @@ SDR++.
 The software is for receiving only. In the US, 47 USC 605 and ECPA restrict divulging or using the contents of
 private communications. Decoding cellular or cordless-phone content and decrypting anything are both off limits. Know
 your local rules.
+
+## History
+
+See [CHANGELOG.md](CHANGELOG.md).
 
 ## License
 
