@@ -5,11 +5,15 @@
 - `sdrpp_mcp/server.py`: FastMCP server and tool definitions; frequency parsing, tuning
   and passband helpers (`_in_band`, `_ensure_in_band`, `_tune_center`).
 - `sdrpp_mcp/sdrpp.py`: SDR++ integration: config reading, `Rigctl` client, `live_center`
-  (centre-probe trick), `capture_iq` (IQ Exporter TCP client), `launch`.
+  (centre-probe trick), `capture_iq` (one-shot IQ Exporter read), `IQStream` (background
+  thread, continuous chunks), `launch`.
 - `sdrpp_mcp/dsp.py`: numpy/scipy DSP: spectrogram, noise floor, detection, channel
   extraction, demodulators, feature measurement, `classify`, audio/tone and stereo/RDS checks.
 - `sdrpp_mcp/plots.py`: matplotlib (Agg) waterfall and sweep images.
 - `sdrpp_mcp/bandplan.py`: US allocations (`ALLOCATIONS`) and named channels (`NOTABLE`).
+- `sdrpp_mcp/meshcore.py`: MeshCore packet parser (cleartext fields only).
+- `sdrpp_mcp/lora_gr.py`: standalone gr-lora_sdr flowgraph; runs under the **system**
+  `/usr/bin/python3` (GNU Radio isn't in the venv), reads a cf32 file, prints JSON per frame.
 - `sdrpp_mcp/logbook.py`: SQLite logbook and SDR++ Frequency Manager export.
 - `setup_sdrpp.py`: one-off SDR++ configuration (run with SDR++ closed).
 - `skill/sdr-signal-id/`: the companion skill (`SKILL.md` + `references/`).
@@ -48,6 +52,16 @@ client connection after code changes; the server is a long-lived process.
   Mode ids: NFM 0, WFM 1, AM 2, DSB 3, USB 4, CW 5, LSB 6, RAW 7.
 - **Decoders**: multimon-ng takes raw s16le audio at 22050 Hz. rtl_433 takes `cu8` IQ at 250 kS/s
   (`-r cu8:<file> -s <rate> -f <hz> -F json -M level`).
+- **Tuning offset**: SDR++ recentres with the VFO about 885 kHz off centre after an
+  out-of-view jump. `_tune_center` always approaches from below and learns that offset
+  (`_approach_offset`), so later retunes land first try.
+- **VFO restore**: tools that retune to reach a frequency wrap the work in `_keep_vfo()`.
+- **watch_channel**: chunks are mixed with a continuous phase (`extract(..., n0=)`), and a burst
+  still on air at a chunk end is carried into the next chunk, so packets aren't split. Output
+  rate is 4x the channel bandwidth because gr-lora_sdr needs an integer oversampling factor.
+  LoRa detection is `dsp.lora_check` (dechirp peak-to-mean; noise/FSK ≈ 8, LoRa ≫ 30).
+  MeshCore: sync word 0x12, preamble 32 symbols at SF ≤ 8 (gr frame_sync is given 8 and
+  still locks).
 
 ## Conventions
 

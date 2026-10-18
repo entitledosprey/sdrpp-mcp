@@ -1,5 +1,6 @@
 """MCP server: control SDR++ and find, analyse, decode and log transmissions."""
 
+import json
 import os
 import re
 import shutil
@@ -12,7 +13,7 @@ import numpy as np
 from mcp.server.fastmcp import FastMCP, Image
 from scipy.io import wavfile
 
-from . import bandplan, dsp, plots, sdrpp
+from . import bandplan, dsp, meshcore, plots, sdrpp
 from .logbook import Logbook
 
 DATA = Path(os.environ.get("SDRPP_MCP_DATA", Path.home() / ".local/share/sdrpp-mcp"))
@@ -554,6 +555,184 @@ def decode(frequency: str, decoder: str, seconds: float = 30.0, bandwidth_hz: fl
             "lines": out[:300], "count": len(out),
             "hint": "" if out else "Nothing decoded: check SNR with analyze_signal, try a longer capture, or "
                                    "inverting (pager FSK polarity varies: decoder handles both for POCSAG)."}
+
+
+# ---------------------------------------------------------------- tools: watching
+
+
+WATCH_CHUNK_S = 1.0
+WATCH_FRAME = 256      # STFT frame at 4x channel bandwidth (~1 ms for 62.5 kHz)
+WATCH_MAX_TAIL_S = 4.0  # longest burst carried across chunk boundaries
+LORA_GR = Path(__file__).with_name("lora_gr.py")
+SYSTEM_PYTHON = "/usr/bin/python3"  # GNU Radio's python, not this venv
+
+
+def _watch_bursts(y, rate, bw, threshold_db, floors):
+    """Per-frame in-channel and neighbour power from y (centred, 4x bw wide). Returns bursts
+    as frame ranges with peak SNRs, and the frame count. floors ([in, side] noise powers)
+    is filled on first use and then tracks slowly, so gain changes are followed."""
+    n = (len(y) // WATCH_FRAME) * WATCH_FRAME
+    frames = y[:n].reshape(-1, WATCH_FRAME) * np.hanning(WATCH_FRAME)
+    p = np.abs(np.fft.fftshift(np.fft.fft(frames, axis=1), axes=1)) ** 2
+    f = np.fft.fftshift(np.fft.fftfreq(WATCH_FRAME, 1 / rate))
+    p_in = p[:, np.abs(f) <= bw / 2].mean(axis=1)
+    p_side = p[:, (np.abs(f) > bw * 0.75) & (np.abs(f) <= bw * 1.75)].mean(axis=1)
+    now = [float(np.percentile(p_in, 20)), float(np.percentile(p_side, 20))]
+    if not floors:
+        floors.extend(now)
+    else:
+        floors[:] = [0.9 * a + 0.1 * b for a, b in zip(floors, now)]
+    snr = dsp.db(p_in / floors[0])
+    side = dsp.db(p_side / floors[1])
+    frame_s = WATCH_FRAME / rate
+    bursts = []
+    for a, b in dsp._runs(snr > threshold_db):
+        if bursts and a - bursts[-1]["b"] <= 3:  # bridge short fades
+            bursts[-1]["b"] = b
+        else:
+            bursts.append({"a": int(a), "b": int(b)})
+    bursts = [d for d in bursts if (d["b"] - d["a"]) * frame_s >= 0.003]
+    for d in bursts:
+        d.update(snr_db=float(snr[d["a"]:d["b"]].max()), side_db=float(side[d["a"]:d["b"]].max()))
+    return bursts, len(p_in)
+
+
+def _gr_lora_available() -> bool:
+    return subprocess.run([SYSTEM_PYTHON, "-c", "import gnuradio.lora_sdr"],
+                          capture_output=True).returncode == 0
+
+
+def _lora_decode(seg, rate, bw, sf, center_hz, sync_word) -> list[dict]:
+    """Demodulate one burst with gr-lora_sdr; returns its frames."""
+    rms = float(np.sqrt(np.mean(np.abs(seg) ** 2))) or 1.0
+    rng = np.random.default_rng(0)
+    pad = int(rate * 0.05)
+    noise = lambda: (rng.normal(size=pad) + 1j * rng.normal(size=pad)) * rms * 1e-3
+    x = np.concatenate([noise(), seg, noise()]).astype(np.complex64)
+    path = CAPTURES / f".lora-{os.getpid()}.cf32"
+    x.tofile(path)
+    try:
+        p = subprocess.run([SYSTEM_PYTHON, str(LORA_GR), str(path), str(int(rate)), str(int(bw)),
+                            str(sf), str(int(center_hz)), hex(sync_word), "8"],
+                           capture_output=True, text=True, timeout=60)
+    finally:
+        path.unlink(missing_ok=True)
+    return [json.loads(l) for l in p.stdout.splitlines() if l.startswith("{")]
+
+
+@mcp.tool()
+def watch_channel(frequency: str, bandwidth_hz: float = 62500, minutes: float = 5.0,
+                  threshold_db: float = 8.0, decode: bool = True, sync_word: int = 0x12) -> list:
+    """Listen to one channel continuously and log every transmission: time, duration, peak SNR,
+    and whether it is LoRa (chirp spread spectrum, tested by dechirping at bandwidth_hz with
+    SF 7-12). Bursts that also fill the neighbouring spectrum are flagged as wideband (another
+    system passing through). decode=True demodulates LoRa packets with gr-lora_sdr (if
+    installed) and parses MeshCore packets: route, hops, path and adverts (node name, type,
+    position). Message bodies are encrypted and are not decrypted.
+    Defaults suit US MeshCore (910.525 MHz, 62.5 kHz, sync word 0x12); Meshtastic US LongFast
+    is 906.875 MHz at 250 kHz with sync word 0x2B. Blocks for `minutes` (max 15)."""
+    hz = parse_freq(frequency)
+    bw = float(bandwidth_hz)
+    rate = 4 * bw
+    minutes = min(float(minutes), 15.0)
+    can_decode = decode and _gr_lora_available()
+    events, to_decode, best, floors = [], [], None, []
+    frame_s = WATCH_FRAME / rate
+    with _keep_vfo():
+        st, _ = _ensure_in_band(hz, margin_hz=bw * 2)
+        fs, c = st["sample_rate"], st["center_hz"]
+        t_start = time.time()
+        t_end = t_start + minutes * 60
+        n0, chunks = 0, 0
+        tail, tail_t = np.zeros(0, np.complex64), None
+        with sdrpp.IQStream(WATCH_CHUNK_S, fs) as stream:
+            while time.time() < t_end:
+                t_chunk, iq = stream.get()
+                chunks += 1
+                y, _ = dsp.extract(iq, fs, hz - c, bw * 4, out_rate=rate, n0=n0)
+                n0 += len(iq)
+                del iq
+                y_t0 = tail_t if len(tail) else t_chunk
+                y = np.concatenate([tail, y])
+                bursts, nframes = _watch_bursts(y, rate, bw, threshold_db, floors)
+                cut = None
+                for d in bursts:
+                    if d["b"] >= nframes - 1 and len(y) / rate < WATCH_MAX_TAIL_S:
+                        cut = d["a"] * WATCH_FRAME  # still on air: finish it next chunk
+                        break
+                    seg = y[d["a"] * WATCH_FRAME:d["b"] * WATCH_FRAME]
+                    wide = d["side_db"] > d["snr_db"] - 6
+                    z, zr = dsp.extract(seg, rate, 0, bw * 1.1)
+                    lora = dsp.lora_check(z, zr, bw)
+                    kind = ("LoRa" if lora["is_lora"] and not wide
+                            else "wideband/other" if wide else "narrowband/other")
+                    ev = {"time": time.strftime("%H:%M:%S", time.localtime(y_t0 + d["a"] * frame_s)),
+                          "dur_ms": round((d["b"] - d["a"]) * frame_s * 1e3, 1),
+                          "snr_db": round(d["snr_db"], 1), "kind": kind}
+                    if kind == "LoRa":
+                        ev.update(sf=lora["sf"], chirp_score=lora["score"])
+                        if can_decode and len(to_decode) < 300:
+                            lo = max(0, d["a"] * WATCH_FRAME - int(rate * 0.01))
+                            to_decode.append((ev, y[lo:d["b"] * WATCH_FRAME + int(rate * 0.01)].copy()))
+                    events.append(ev)
+                    rank = (kind == "LoRa", d["snr_db"])
+                    if best is None or rank > best[0]:
+                        best = (rank, seg.copy(), ev)
+                if cut is None:
+                    tail, tail_t = np.zeros(0, np.complex64), None
+                else:
+                    lo = max(0, cut - int(rate * 0.01))
+                    tail, tail_t = y[lo:].copy(), y_t0 + lo / rate
+        dropped = stream.dropped
+    wall = time.time() - t_start
+
+    nodes = {}
+    for ev, seg in to_decode:
+        frames = _lora_decode(seg, rate, bw, ev["sf"], hz, sync_word)
+        ev["packets"] = []
+        for fr in frames:
+            pkt = {"crc_ok": fr["crc_ok"], "len": fr["len"]}
+            if fr["crc_ok"]:
+                mc = meshcore.parse(bytes.fromhex(fr["payload"]))
+                pkt["meshcore"] = mc
+                adv = mc.get("advert")
+                if adv and adv.get("node_id"):
+                    nodes[adv["node_id"]] = {**adv, "last_heard": ev["time"], "hops": mc.get("hops")}
+            else:
+                pkt["raw"] = fr["payload"][:64]
+            ev["packets"].append(pkt)
+
+    lora_ev = [e for e in events if e["kind"] == "LoRa"]
+    decoded = [p for e in lora_ev for p in e.get("packets", []) if p["crc_ok"]]
+    result = {
+        "frequency": fmt(hz), "bandwidth_hz": bw,
+        "listened_s": round(chunks * WATCH_CHUNK_S, 1), "wall_s": round(wall, 1),
+        "coverage": round(chunks * WATCH_CHUNK_S / max(wall, 1e-9), 2), "dropped_chunks": dropped,
+        "lora_packets": len(lora_ev), "decoded_ok": len(decoded), "other_bursts": len(events) - len(lora_ev),
+        "decoder": ("gr-lora_sdr" if can_decode else
+                    "off" if not decode else "gr-lora_sdr not installed (see README); detection only"),
+        "nodes_heard": list(nodes.values()),
+        "packet_types": {t: sum(1 for p in decoded if p["meshcore"].get("type") == t)
+                         for t in sorted({p["meshcore"].get("type") for p in decoded})},
+        "lora": lora_ev[:100],
+        "other": [e for e in events if e["kind"] != "LoRa"][:30],
+        "band_plan": bandplan.lookup(hz, 25),
+    }
+    if best is None:
+        return [result]
+    _, seg, ev = best
+    # first 40 ms only: short enough that every STFT frame gets its own row, so LoRa
+    # chirps show as diagonals instead of being averaged into a block
+    pad = np.zeros(int(rate * 0.005), np.complex64)
+    seg = np.concatenate([pad, seg[:int(rate * 0.04)]])
+    zf, zt, zs = dsp.spectrogram(seg, rate, 64 if bw <= 125e3 else 128)
+    p = dsp.db(zs.mean(axis=0))
+    floor = max(dsp.noise_floor_db(p), float(p.max()) - 45)  # strong bursts: scale to the peak
+    png = _stamp(hz, "watch", "png")
+    plots.waterfall(png, zf + hz, zt, zs, floor,
+                    f"{fmt(hz)} {ev['kind']} burst at {ev['time']}, {ev['dur_ms']} ms (first 40 ms shown)", dyn=42)
+    result["image"] = str(png)
+    return [result, Image(path=str(png))]
 
 
 # ---------------------------------------------------------------- tools: logbook

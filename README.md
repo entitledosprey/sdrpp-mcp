@@ -28,6 +28,11 @@ tuner, 2.4 MS/s).
 - **Decoding**:
   - [multimon-ng](https://github.com/EliasOenal/multimon-ng): POCSAG/FLEX pagers, APRS/AFSK1200, EAS/SAME, DTMF, ZVEI, Morse, X10.
   - [rtl_433](https://github.com/merbanan/rtl_433): ISM-band sensors.
+- **Channel watching and LoRa/MeshCore decoding**: continuous capture of one channel,
+  logging every burst; LoRa is recognised by dechirping, demodulated with
+  [gr-lora_sdr](https://github.com/tapparelj/gr-lora_sdr), and MeshCore packets are parsed
+  (route, hop path, payload type, node adverts with name/type/position). Encrypted message
+  bodies are not decrypted.
 - **Logbook**: SQLite log of identified signals, searchable, exportable as an SDR++
   Frequency Manager bookmark list.
 
@@ -52,6 +57,16 @@ cd sdrpp-mcp
 python3 -m venv .venv && .venv/bin/pip install -e .
 python3 setup_sdrpp.py            # with SDR++ closed
 sudo apt install multimon-ng rtl-433   # optional decoders
+```
+
+Optional, for LoRa/MeshCore decoding in `watch_channel` (GNU Radio + gr-lora_sdr, used through
+the system `python3`):
+
+```sh
+sudo apt install gnuradio-dev cmake pybind11-dev libspdlog-dev libfmt-dev libgmp-dev
+git clone https://github.com/tapparelj/gr-lora_sdr.git && cd gr-lora_sdr
+mkdir build && cd build && cmake .. -DCMAKE_BUILD_TYPE=Release && make -j"$(nproc)"
+sudo make install && sudo ldconfig
 ```
 
 Register the server with your MCP client as a stdio server, for example:
@@ -88,6 +103,7 @@ ln -s "$PWD/skill/sdr-signal-id" ~/.config/<client>/skills/sdr-signal-id
 | `record_audio` | demodulate to WAV |
 | `record_iq` | save raw IQ (`cu8`/`cf32`) |
 | `decode` | run multimon-ng or rtl_433 on a capture |
+| `watch_channel` | listen to one channel for up to 15 min; detect, decode and parse LoRa/MeshCore packets |
 | `log_signal` / `search_log` / `delete_log_entry` | logbook |
 | `export_bookmarks` | write the logbook to SDR++'s Frequency Manager (SDR++ must be closed) |
 
@@ -98,7 +114,7 @@ are treated as MHz.
 
 Everything lives under `~/.local/share/sdrpp-mcp/`:
 
-- `captures/`: WAV, IQ and PNG files
+- `captures/`: WAV, IQ and PNG files (named `<time>_<freq>_<kind>`)
 - `center-probe/`: temporary probe files
 - `logbook.db`: the logbook
 

@@ -2,10 +2,12 @@
 
 import json
 import os
+import queue
 import re
 import shutil
 import socket
 import subprocess
+import threading
 import time
 from pathlib import Path
 
@@ -238,24 +240,7 @@ def capture_iq(seconds: float, sample_rate: float, discard_s: float = 0.05) -> t
 
     Returns (complex64 samples, measured sample rate).
     """
-    cfg = iq_config()
-    if not cfg:
-        raise SdrppError(
-            f"No '{IQ_INSTANCE}' module configured in SDR++. Run setup_sdrpp.py with SDR++ closed, "
-            "or add an iq_exporter instance in SDR++'s Module Manager."
-        )
-    mode = str(cfg.get("mode", "")).lower()
-    proto = str(cfg.get("protocol", "")).lower()
-    if mode and "base" not in mode:
-        raise SdrppError(f"IQ Exporter mode is {cfg.get('mode')!r}; set it to Baseband.")
-    if proto and "server" not in proto:
-        raise SdrppError(f"IQ Exporter protocol is {cfg.get('protocol')!r}; set it to TCP (Server).")
-    host = cfg.get("host", "localhost")
-    if host in ("0.0.0.0", ""):
-        host = "localhost"
-    port = int(cfg.get("port", 1234))
-    key, (dtype, scale) = _sample_type(cfg)
-    bytes_per_sample = 2 * np.dtype(dtype).itemsize
+    host, port, dtype, scale, bytes_per_sample = _iq_endpoint()
     want = int((seconds + discard_s) * sample_rate) * bytes_per_sample
     buf = bytearray(want)
     view = memoryview(buf)
@@ -273,21 +258,116 @@ def capture_iq(seconds: float, sample_rate: float, discard_s: float = 0.05) -> t
                     t0 = time.perf_counter()
                 got += n
             elapsed = time.perf_counter() - (t0 or time.perf_counter())
-    except socket.timeout as e:
-        raise SdrppError(
-            "IQ Exporter connected but no data arrived. Is the SDR source started (play button) and "
-            "the IQ Exporter 'Start' pressed?"
-        ) from e
-    except OSError as e:
-        raise SdrppError(
-            f"IQ Exporter not reachable on {host}:{port} ({e}). In SDR++ open the 'IQ Exporter' menu, "
-            "set Mode=Baseband, Protocol=TCP (Server), and press Start."
-        ) from e
+    except (socket.timeout, OSError) as e:
+        raise _iq_error(e, host, port) from e
     got -= got % bytes_per_sample
-    raw = np.frombuffer(bytes(buf[:got]), dtype=dtype).astype(np.float32)
-    if scale != 1.0:
-        raw /= scale
-    iq = raw.view(np.complex64)
+    iq = _to_complex(buf[:got], dtype, scale)
     measured = len(iq) / elapsed if elapsed > 0 else sample_rate
     skip = int(discard_s * sample_rate)
     return iq[skip:], measured
+
+
+def _to_complex(raw: bytes | bytearray, dtype, scale) -> np.ndarray:
+    x = np.frombuffer(bytes(raw), dtype=dtype).astype(np.float32)
+    if scale != 1.0:
+        x /= scale
+    return x.view(np.complex64)
+
+
+def _iq_error(e: Exception, host, port) -> "SdrppError":
+    if isinstance(e, socket.timeout):
+        return SdrppError(
+            "IQ Exporter connected but no data arrived. Is the SDR source started (play button) and "
+            "the IQ Exporter 'Start' pressed?"
+        )
+    return SdrppError(
+        f"IQ Exporter not reachable on {host}:{port} ({e}). In SDR++ open the 'IQ Exporter' menu, "
+        "set Mode=Baseband, Protocol=TCP (Server), and press Start."
+    )
+
+
+class IQStream:
+    """Continuous IQ from the IQ Exporter: a background thread keeps one connection open and
+    queues fixed-size chunks, so processing between chunks doesn't lose samples. If the
+    consumer falls behind, the oldest chunk is dropped and counted in `dropped`."""
+
+    def __init__(self, chunk_s: float, sample_rate: float, max_queue: int = 6):
+        self.host, self.port, self.dtype, self.scale, self.bps = _iq_endpoint()
+        self.chunk_s = chunk_s
+        self.chunk_bytes = int(chunk_s * sample_rate) * self.bps
+        self.queue = queue.Queue(max_queue)
+        self.dropped = 0
+        self.error = None
+        self._stop = threading.Event()
+
+    def __enter__(self):
+        try:
+            self.sock = socket.create_connection((self.host, self.port), timeout=3.0)
+        except OSError as e:
+            raise _iq_error(e, self.host, self.port) from e
+        self.sock.settimeout(3.0)
+        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 8 << 20)
+        self.thread = threading.Thread(target=self._run, daemon=True)
+        self.thread.start()
+        return self
+
+    def _run(self):
+        buf = bytearray(self.chunk_bytes)
+        view = memoryview(buf)
+        try:
+            while not self._stop.is_set():
+                got = 0
+                while got < self.chunk_bytes:
+                    n = self.sock.recv_into(view[got:], self.chunk_bytes - got)
+                    if n == 0:
+                        raise OSError("IQ Exporter closed the connection")
+                    got += n
+                item = (time.time() - self.chunk_s, bytes(buf))
+                if self.queue.full():
+                    self.queue.get_nowait()
+                    self.dropped += 1
+                self.queue.put_nowait(item)
+        except (socket.timeout, OSError) as e:
+            if not self._stop.is_set():
+                self.error = _iq_error(e, self.host, self.port)
+
+    def get(self, timeout: float = 5.0) -> tuple[float, np.ndarray]:
+        """Next chunk as (approximate wall-clock start time, complex64 samples)."""
+        while True:
+            if self.error:
+                raise self.error
+            try:
+                t, raw = self.queue.get(timeout=timeout)
+                return t, _to_complex(raw, self.dtype, self.scale)
+            except queue.Empty:
+                if self.error:
+                    raise self.error
+                raise SdrppError("IQ stream stalled; is the SDR source still running?")
+
+    def __exit__(self, *exc):
+        self._stop.set()
+        self.sock.close()
+        self.thread.join(timeout=2)
+
+
+def _iq_endpoint():
+    """Validate the IQ Exporter config; return (host, port, dtype, scale, bytes per sample)."""
+    cfg = iq_config()
+    if not cfg:
+        raise SdrppError(
+            f"No '{IQ_INSTANCE}' module configured in SDR++. Run setup_sdrpp.py with SDR++ closed, "
+            "or add an iq_exporter instance in SDR++'s Module Manager."
+        )
+    mode = str(cfg.get("mode", "")).lower()
+    proto = str(cfg.get("protocol", "")).lower()
+    if mode and "base" not in mode:
+        raise SdrppError(f"IQ Exporter mode is {cfg.get('mode')!r}; set it to Baseband.")
+    if proto and "server" not in proto:
+        raise SdrppError(f"IQ Exporter protocol is {cfg.get('protocol')!r}; set it to TCP (Server).")
+    host = cfg.get("host", "localhost")
+    if host in ("0.0.0.0", ""):
+        host = "localhost"
+    port = int(cfg.get("port", 1234))
+    _, (dtype, scale) = _sample_type(cfg)
+    bytes_per_sample = 2 * np.dtype(dtype).itemsize
+    return host, port, dtype, scale, bytes_per_sample

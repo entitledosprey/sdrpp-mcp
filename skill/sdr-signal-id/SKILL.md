@@ -61,6 +61,18 @@ install command (`sudo apt install multimon-ng rtl-433`) for the user to run wit
 For other systems (ADS-B, ACARS, VDL2, AIS, Meteor LRPT, DMR voice) see decoders.md; some need
 SDR++'s own modules or exclusive use of the dongle.
 
+## Workflow: LoRa / MeshCore watching
+
+`watch_channel frequency [bandwidth_hz] [minutes]` listens continuously (≈99% coverage),
+flags LoRa bursts by dechirping (reports SF), and with gr-lora_sdr installed demodulates them
+and parses MeshCore packets: route, hop path, payload type, and adverts (node name, type,
+position). Defaults are the US MeshCore preset: 910.525 MHz, 62.5 kHz, SF7, sync word 0x12.
+Meshtastic US LongFast is 906.875 MHz, 250 kHz, sync word 0x2B (MeshCore parsing won't apply).
+It blocks for `minutes`; tell the user when it starts so they can transmit a test advert.
+Summarise: nodes heard (name/type/hash, hops), path structure (which repeaters relay), and
+packet-type mix. Message bodies are encrypted: never try to decrypt them. Adverts can carry a
+precise position; point that out when it's the user's own node.
+
 ## Workflow: teaching
 
 When the user wants to learn, explain at a hobbyist level, tied to what they're seeing:

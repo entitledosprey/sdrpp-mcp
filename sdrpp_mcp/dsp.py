@@ -103,13 +103,14 @@ def detect(f, frames, threshold_db=8.0, min_width_hz=0.0, merge_gap_hz=None,
 
 
 def extract(iq: np.ndarray, fs: float, offset_hz: float, bandwidth_hz: float,
-            out_rate: float | None = None):
+            out_rate: float | None = None, n0: int = 0):
     """Shift `offset_hz` to DC, low-pass to bandwidth, resample.
 
     out_rate: exact output rate, else the smallest integer decimation giving
-    at least 2x the bandwidth. Returns (samples, rate).
+    at least 2x the bandwidth. n0: index of iq[0] in a longer stream, so the mixer
+    phase stays continuous across consecutive chunks. Returns (samples, rate).
     """
-    n = np.arange(len(iq), dtype=np.float64)
+    n = np.arange(n0, n0 + len(iq), dtype=np.float64)
     x = iq * np.exp(-2j * np.pi * offset_hz / fs * n).astype(np.complex64)
     if out_rate:
         fr = Fraction(out_rate / fs).limit_denominator(2000)
@@ -409,3 +410,27 @@ def stereo_rds(x: np.ndarray, fs: float) -> dict:
         out["rds_57k"] = out["rds_57k_db"] > 6
         out["note"] = "SDR++'s WFM demodulator decodes RDS (station name/radiotext) in its Radio menu"
     return out
+
+
+def chirp_score(x: np.ndarray, fs: float, bw: float, sf: int) -> float:
+    """LoRa test: dechirp with the base downchirp for (bw, sf) and see whether each symbol's
+    energy collapses into one FFT bin. Returns the median peak-to-mean bin power over
+    symbol-length windows: about ln(2**sf)+0.6 for noise or FSK, far higher for CSS."""
+    n = 2 ** sf
+    fr = Fraction(bw / fs).limit_denominator(1000)
+    y = signal.resample_poly(x, fr.numerator, fr.denominator)
+    if len(y) < 2 * n:
+        return 0.0
+    k = np.arange(n)
+    down = np.exp(-1j * np.pi * k * k / n)
+    starts = range(0, len(y) - n + 1, n // 2)
+    p = np.abs(np.fft.fft(np.stack([y[s:s + n] for s in starts]) * down, axis=1)) ** 2
+    return float(np.median(p.max(axis=1) / p.mean(axis=1)))
+
+
+def lora_check(x: np.ndarray, fs: float, bw: float, sfs=range(7, 13)) -> dict:
+    """Best spreading factor by chirp_score; is_lora when it clearly beats the noise level."""
+    scores = {sf: chirp_score(x, fs, bw, sf) for sf in sfs}
+    sf = max(scores, key=scores.get)
+    noise = np.log(2 ** sf) + 0.6
+    return {"sf": int(sf), "score": round(float(scores[sf]), 1), "is_lora": bool(scores[sf] > 3 * noise)}

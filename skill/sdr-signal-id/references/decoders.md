@@ -10,6 +10,11 @@
 | dtmf, zvei, morse | multimon-ng | DTMF digits, selcall tones, CW | same |
 | ism | rtl_433 (offline on IQ) | ~250 protocols: weather stations, TPMS, remotes, sensors, meters | `sudo apt install rtl-433` |
 
+`watch_channel` (separate tool) uses gr-lora_sdr for LoRa PHY decoding and parses MeshCore.
+gr-lora_sdr install: `sudo apt install gnuradio-dev cmake pybind11-dev libspdlog-dev libfmt-dev
+libgmp-dev`, then build https://github.com/tapparelj/gr-lora_sdr (cmake, make, `sudo make
+install && sudo ldconfig`). It runs under the system python3, not the server's venv.
+
 The tool captures from SDR++'s IQ stream, so SDR++ keeps running. `record_iq` writes `.cu8`
 files rtl_433 and most other tools can replay (`rtl_433 -r file.cu8 -s 250000`).
 
