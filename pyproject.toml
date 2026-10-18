@@ -1,0 +1,16 @@
+[project]
+name = "sdrpp-mcp"
+version = "0.1.0"
+description = "MCP server to find, identify, decode and log radio signals via SDR++"
+requires-python = ">=3.10"
+dependencies = ["mcp<2", "numpy", "scipy", "matplotlib"]
+
+[project.scripts]
+sdrpp-mcp = "sdrpp_mcp.server:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["sdrpp_mcp"]
