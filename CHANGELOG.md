@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-10-19
+
+### Added
+- `p25_status` and `p25_calls` tools for the companion sdrpp-p25 trunking module (decoder API +
+  event log), and a guard that stops retuning tools while that module owns the tuning.
+
 ## 2026-10-18
 
 ### Added

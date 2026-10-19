@@ -91,7 +91,14 @@ before measuring.
 
 ## P25 and trunking questions
 
-SDR++ has no P25 trunking or IMBE voice. Options, best first: SDRTrunk (handles simulcast
+If the sdrpp-p25 module is installed (github.com/entitledosprey/sdrpp-p25), it trunks P25 Phase
+1/2 inside SDR++ with voice. Use `p25_status` for what it's doing now (site, control channel,
+calls per slot, FEC/SNR) and `p25_calls` for recent traffic; summarise by talkgroup rather than
+listing radio aliases. While it runs it owns the tuning, so don't use retuning tools: they
+refuse; ask the user to stop it first. If it can't lock a control channel, measure the site's
+frequencies for steady carriers and check gain before blaming decoding.
+
+Without that module, SDR++ itself has no P25 trunking or IMBE voice. Other options: SDRTrunk (handles simulcast
 CQPSK well; can import RadioReference data), DSD-FME (trunks by retuning SDR++ through rigctl
 on 4532, with audio via SDR++'s network sink on 7355; conflicts with the `sdrpp` tools while
 running), OP25, or the sdrpp-vhfvoiceradio plugin (conventional single-channel only).

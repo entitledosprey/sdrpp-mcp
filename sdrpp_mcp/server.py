@@ -13,7 +13,7 @@ import numpy as np
 from mcp.server.fastmcp import FastMCP, Image
 from scipy.io import wavfile
 
-from . import bandplan, dsp, meshcore, plots, sdrpp
+from . import bandplan, dsp, meshcore, p25, plots, sdrpp
 from .logbook import Logbook
 
 DATA = Path(os.environ.get("SDRPP_MCP_DATA", Path.home() / ".local/share/sdrpp-mcp"))
@@ -96,6 +96,15 @@ def _ensure_in_band(freq_hz: float, margin_hz: float = 0.0):
     return st, True
 
 
+def _p25_guard():
+    """Refuse to retune while the SDR++ P25 Trunking module's decoder owns the tuning."""
+    if p25.owns_tuning():
+        raise sdrpp.SdrppError(
+            "The SDR++ P25 Trunking module is running and controls the tuning; retuning now would "
+            "break its trunking (it would also pull the SDR back). Stop it in its SDR++ panel first, "
+            "or use p25_status / p25_calls to see what it's receiving.")
+
+
 def _tune_center(target_hz: float):
     """Retune SDR++ so its centre frequency is near target, via the Radio VFO.
 
@@ -105,6 +114,7 @@ def _tune_center(target_hz: float):
     the approach with the VFO pre-offset by that amount.
     """
     global _approach_offset
+    _p25_guard()
     rig = sdrpp.Rigctl()
     st = sdrpp.radio_state()
     fs = st["sample_rate"] or 2.4e6
@@ -203,6 +213,7 @@ def sdr_status() -> dict:
             out["iq_exporter"] = str(e)
     out["decoders"] = {t: bool(shutil.which(t)) for t in ("multimon-ng", "rtl_433", "sox", "direwolf", "acarsdec", "dumpvdl2")}
     out["captures_dir"] = str(CAPTURES)
+    out["p25_trunking"] = "running (owns tuning; see p25_status)" if p25.owns_tuning() else "not running"
     return out
 
 
@@ -217,6 +228,7 @@ def sdr_tune(frequency: str, mode: str | None = None, bandwidth_hz: float | None
     """Tune SDR++'s Radio VFO so the user hears the frequency. mode: FM (=NFM), WFM, AM, DSB,
     USB, LSB, CW, RAW. bandwidth_hz optional (e.g. 12500 NFM, 200000 WFM, 10000 AM, 2700 SSB)."""
     hz = parse_freq(frequency)
+    _p25_guard()
     rig = sdrpp.Rigctl()
     if mode:
         rig.set_mode(mode, bandwidth_hz)
@@ -736,6 +748,54 @@ def watch_channel(frequency: str, bandwidth_hz: float = 62500, minutes: float = 
                     f"{fmt(hz)} {ev['kind']} burst at {ev['time']}, {ev['dur_ms']} ms (first 40 ms shown)", dyn=42)
     result["image"] = str(png)
     return [result, Image(path=str(png))]
+
+
+# ---------------------------------------------------------------- tools: P25 trunking
+
+
+@mcp.tool()
+def p25_status() -> dict:
+    """Live state of the SDR++ P25 Trunking module (sdrpp-p25) and its dsd-neo decoder: site
+    profile, system/site identity, control and voice channel, current call per TDMA slot
+    (talkgroup, alias, source, encrypted), decode quality (control-channel FEC, voice errors)
+    and SNR. Read-only. While it runs it owns the SDR's tuning, so tools that retune refuse."""
+    data = p25.api_get()
+    if data is None:
+        return {"running": False,
+                "hint": "Start it from the P25 Trunking panel in SDR++ (see github.com/entitledosprey/sdrpp-p25)."}
+    st, sysd, call = data.get("status") or {}, data.get("system") or {}, data.get("call") or {}
+    q, m = data.get("quality") or {}, data.get("metrics") or {}
+    slots = [{k: s.get(k) for k in ("slot", "state", "tg_id", "name", "src_text", "enc", "emergency",
+                                      "frequency_hz", "elapsed_ms")} for s in (call.get("slots") or [])]
+    return {
+        "running": True,
+        "profile": p25.profile_name(),
+        "protocol": sysd.get("protocol"),
+        "control_channel": fmt(sysd["cc_freq_hz"]) if sysd.get("cc_freq_hz") else None,
+        "voice_channel": fmt(sysd["vc_freq_hz"]) if sysd.get("vc_freq_hz") else None,
+        "trunk_tuned": st.get("trunk_tuned"),
+        "neighbor_sites": len(sysd.get("p25_neighbors") or []),
+        "slots": slots,
+        "snr_db": round(m["snr_db"], 1) if isinstance(m.get("snr_db"), (int, float)) else None,
+        "control_fec": q.get("cc_fec"),
+        "voice_errors": m.get("decode_health"),
+        "message": (st.get("message") or {}).get("text") if isinstance(st.get("message"), dict) else None,
+    }
+
+
+@mcp.tool()
+def p25_calls(limit: int = 30, talkgroup: str | None = None) -> dict:
+    """Recent calls the P25 Trunking module's decoder heard (newest first), from its event log:
+    time, talkgroup (id and name), source radio id and alias, TDMA slot, encrypted flag.
+    talkgroup filters by id or exact name. Privacy: summarise traffic; don't repeat personal
+    details from radio aliases back verbatim beyond what's needed."""
+    rows = p25.recent_calls(int(limit), talkgroup)
+    tgs = {}
+    for r in rows:
+        key = f"{r['talkgroup_name'] or r['talkgroup']}"
+        tgs[key] = tgs.get(key, 0) + 1
+    return {"profile": p25.profile_name(), "count": len(rows), "busiest": dict(sorted(tgs.items(), key=lambda x: -x[1])[:10]),
+            "calls": rows}
 
 
 # ---------------------------------------------------------------- tools: logbook

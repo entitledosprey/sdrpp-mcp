@@ -119,11 +119,19 @@ map onto the tools:
 | `record_iq` | save raw IQ (`cu8`/`cf32`) |
 | `decode` | run multimon-ng or rtl_433 on a capture |
 | `watch_channel` | listen to one channel for up to 15 min; detect, decode and parse LoRa/MeshCore packets |
+| `p25_status` / `p25_calls` | live state and recent calls of the [sdrpp-p25](https://github.com/entitledosprey/sdrpp-p25) trunking module, if it's running |
 | `log_signal` / `search_log` / `delete_log_entry` | logbook |
 | `export_bookmarks` | write the logbook to SDR++'s Frequency Manager (SDR++ must be closed) |
 
 Frequencies accept Hz or strings such as `146.52M`, `433.92 MHz` or `1090m`. Bare numbers below 10000
 are treated as MHz.
+
+## P25 trunking
+
+[sdrpp-p25](https://github.com/entitledosprey/sdrpp-p25) is a companion SDR++ module that trunks P25
+Phase 1/2 systems and plays the voice in SDR++. When it is running it owns the SDR's tuning:
+`p25_status` and `p25_calls` read its decoder's API and event log, and every tool here that
+would retune SDR++ refuses until the module is stopped.
 
 ## Data locations
 

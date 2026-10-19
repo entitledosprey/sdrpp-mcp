@@ -14,6 +14,8 @@
 - `sdrpp_mcp/meshcore.py`: MeshCore packet parser (cleartext fields only).
 - `sdrpp_mcp/lora_gr.py`: standalone gr-lora_sdr flowgraph; runs under the **system**
   `/usr/bin/python3` (GNU Radio isn't in the venv), reads a cf32 file, prints JSON per frame.
+- `sdrpp_mcp/p25.py`: read-only client for the sdrpp-p25 module's decoder API (port from
+  `p25_trunking_config.json`, default 9911) and event log; `owns_tuning()` backs the retune guard.
 - `sdrpp_mcp/logbook.py`: SQLite logbook and SDR++ Frequency Manager export.
 - `setup_sdrpp.py`: one-off SDR++ configuration (run with SDR++ closed; honours `SDRPP_MCP_DATA`).
 - `tools/sdrtrunk_to_sdrpp.py`: SDRTrunk playlist → SDR++ Frequency Manager import files.
@@ -70,6 +72,8 @@ Environment variables (set in the MCP client's server entry):
   Mode ids: NFM 0, WFM 1, AM 2, DSB 3, USB 4, CW 5, LSB 6, RAW 7.
 - **Decoders**: multimon-ng takes raw s16le audio at 22050 Hz. rtl_433 takes `cu8` IQ at 250 kS/s
   (`-r cu8:<file> -s <rate> -f <hz> -F json -M level`).
+- **P25 guard**: `_tune_center` and `sdr_tune` call `_p25_guard()`, which refuses while the
+  sdrpp-p25 decoder reports a radio input. The module defends its tuning and would undo ours.
 - **VFO restore**: tools that retune to reach a frequency wrap the work in `_keep_vfo()`
   (`analyze_signal` skips it when `tune_vfo=True`). `band_sweep` restores explicitly.
 - **Sweep coverage**: `band_sweep` records each step's actual span and returns `not_covered`
